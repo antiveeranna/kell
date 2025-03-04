@@ -7,34 +7,35 @@
 #define SCREEN_HEIGHT 32
 #define CS_PIN 5
 #define DEBOUNCE_TIME 100
-#define BUFFER_SIZE 32
+#define BUFFER_SIZE 3
 #define PCF8574_ADDR 0x20
 #define SDA_PIN 21
 #define SCL_PIN 22
 #define INT_PIN 34 // 10k pull-up resistor required!
 #define LED_PIN 2
+#define FLASH_DELAY 400
+bool ledState = LOW;
+
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-TaskHandle_t max7221TaskHandle = NULL;
 TaskHandle_t keypadTaskHandle = NULL;
+TaskHandle_t countdownTaskHandle = NULL;
+TaskHandle_t countupTaskHandle = NULL;
 
 volatile bool keyPressed = false;
 unsigned long lastKeyTime = 0;
 char lastKey = 0;
 char inputBuffer[BUFFER_SIZE] = {0};
 int bufferIndex = 0;
+int countdownValue = -1; // Holds the countdown start value
+int countupValue = -1;   // Holds the count-up end value
 
 const char keypadMap[4][4] = {
     {'1', '2', '3', 'A'},
     {'4', '5', '6', 'B'},
     {'7', '8', '9', 'C'},
     {'*', '0', '#', 'D'}};
-
-/*void IRAM_ATTR handleInterrupt()
-{
-    keyPressed = true;
-}*/
 
 void IRAM_ATTR handleInterrupt()
 {
@@ -92,6 +93,11 @@ char readKeypad()
     return 0;
 }
 
+void toggleLED() {
+    ledState = !ledState;
+    digitalWrite(LED_PIN, ledState);
+}
+
 void sendToMax7221(uint8_t address, uint8_t value)
 {
     digitalWrite(CS_PIN, LOW);
@@ -100,21 +106,89 @@ void sendToMax7221(uint8_t address, uint8_t value)
     digitalWrite(CS_PIN, HIGH);
 }
 
-void max7221Task(void *pvParameters)
+void displayNumberOnMax7221(int number)
+{
+    int tens = number / 10;
+    int ones = number % 10;
+
+    sendToMax7221(0x01, tens > 0 ? tens : 0x0f);
+    sendToMax7221(0x02, ones);
+}
+
+void flashFinalNumber(int number) {
+    for (int i = 0; i < 6; i++) {
+        displayNumberOnMax7221(number);
+        display.clearDisplay();
+        display.setTextSize(3);
+        display.setTextColor(SSD1306_WHITE);
+        display.setCursor(20, 10);
+        display.printf("%02d", number);
+        display.display();
+        vTaskDelay(pdMS_TO_TICKS(FLASH_DELAY));
+
+        // Clear display for flashing effect
+        sendToMax7221(0x02, 0x0F);
+        sendToMax7221(0x01, 0x0F);
+        display.clearDisplay();
+        display.display();
+        vTaskDelay(pdMS_TO_TICKS(FLASH_DELAY));
+    }
+}
+
+void countdownTask(void *pvParameters)
 {
     while (1)
     {
-        for (int i = 0; i < 10; i++)
+        if (countdownValue > 0)
         {
-            Serial.printf("Updating Display: %d\n", i);
-            sendToMax7221(0x01, i);
-            sendToMax7221(0x02, i + 1);
+            for (; countdownValue >= 0; countdownValue--)
+            {
+                Serial.printf("Countdown: %d\n", countdownValue);
+                displayNumberOnMax7221(countdownValue);
 
-            digitalWrite(LED_PIN, HIGH);
-            vTaskDelay(pdMS_TO_TICKS(200));
-            digitalWrite(LED_PIN, LOW);
-            vTaskDelay(pdMS_TO_TICKS(400));
+                display.clearDisplay();
+                display.setTextSize(3);
+                display.setTextColor(SSD1306_WHITE);
+                display.setCursor(20, 10);
+                display.printf("%02d", countdownValue);
+                display.display();
+                toggleLED();
+
+                vTaskDelay(pdMS_TO_TICKS(1000)); // Wait for 1 second
+            }
+            flashFinalNumber(0);
+            countdownValue = -1; // Stop counting
         }
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+
+// Count-up Task - Increments the number every second
+void countupTask(void *pvParameters)
+{
+    while (1)
+    {
+        if (countupValue > 0)
+        {
+            for (int i = 0; i <= countupValue; i++)
+            {
+                Serial.printf("Counting Up: %d\n", i);
+                displayNumberOnMax7221(i);
+
+                display.clearDisplay();
+                display.setTextSize(3);
+                display.setTextColor(SSD1306_WHITE);
+                display.setCursor(20, 10);
+                display.printf("%02d", i);
+                display.display();
+                toggleLED();
+
+                vTaskDelay(pdMS_TO_TICKS(1000)); // Wait for 1 second
+            }
+            flashFinalNumber(countupValue);
+            countupValue = -1; // Stop counting
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
 
@@ -138,22 +212,34 @@ void keypadTask(void *pvParameters)
                 bufferIndex = 0;
                 inputBuffer[0] = '\0';
             }
-            else if (key == '*' && bufferIndex > 0)
-            { // Backspace with '*'
-                bufferIndex--;
-                inputBuffer[bufferIndex] = '\0';
-            }
-            else if (bufferIndex < BUFFER_SIZE - 1)
-            { // Add key to buffer
+            else if (isdigit(key) && bufferIndex < 2)
+            { // Store up to 2-digit numbers
                 inputBuffer[bufferIndex++] = key;
                 inputBuffer[bufferIndex] = '\0';
+            }
+            else if (key == 'A' && bufferIndex > 0)
+            { // Start countdown on 'A'
+                countdownValue = atoi(inputBuffer);
+                countupValue = -1;
+
+                Serial.printf("Starting countdown from: %d\n", countdownValue);
+                bufferIndex = 0;
+                inputBuffer[0] = '\0';
+            }
+            else if (key == 'B' && bufferIndex > 0)
+            { // Start count-up on 'B'
+                countupValue = atoi(inputBuffer);
+                countdownValue = -1;
+                Serial.printf("Starting count-up to: %d\n", countupValue);
+                bufferIndex = 0;
+                inputBuffer[0] = '\0';
             }
 
             display.clearDisplay();
             display.setTextSize(2);
             display.setTextColor(SSD1306_WHITE);
-            display.setCursor(0, 10);
-            display.println(inputBuffer);
+            display.setCursor(20, 10);
+            display.printf("%s", inputBuffer);
             display.display();
             lastKey = key;
             lastKeyTime = millis();
@@ -208,23 +294,9 @@ void setup()
     display.clearDisplay();
     display.setTextSize(3);
 
-    xTaskCreatePinnedToCore(
-        max7221Task,
-        "MAX7221Task",
-        2048,
-        NULL,
-        1,
-        &max7221TaskHandle,
-        1);
-
-    xTaskCreatePinnedToCore(
-        keypadTask,
-        "KeypadTask",
-        4096,
-        NULL,
-        1,
-        &keypadTaskHandle,
-        1);
+    xTaskCreatePinnedToCore(keypadTask, "KeypadTask", 4096, NULL, 1, &keypadTaskHandle, 1);
+    xTaskCreatePinnedToCore(countdownTask, "CountdownTask", 4096, NULL, 2, &countdownTaskHandle, 1);
+    xTaskCreatePinnedToCore(countupTask, "CountupTask", 4096, NULL, 2, &countupTaskHandle, 1);
 }
 
 void loop()
