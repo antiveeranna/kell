@@ -16,7 +16,6 @@
 #define FLASH_DELAY 400
 bool ledState = LOW;
 
-
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 TaskHandle_t keypadTaskHandle = NULL;
@@ -72,7 +71,7 @@ char readKeypad()
     {
         byte rowMask = ~(1 << row) & 0x0F;
         writePCF8574(rowMask | 0xF0); // Activate one row
-        delayMicroseconds(500);       // 1000?
+        delayMicroseconds(500);
 
         byte colData = readPCF8574() & 0xF0;
 
@@ -93,7 +92,8 @@ char readKeypad()
     return 0;
 }
 
-void toggleLED() {
+void toggleLED()
+{
     ledState = !ledState;
     digitalWrite(LED_PIN, ledState);
 }
@@ -115,22 +115,29 @@ void displayNumberOnMax7221(int number)
     sendToMax7221(0x02, ones);
 }
 
-void flashFinalNumber(int number) {
-    for (int i = 0; i < 6; i++) {
-        displayNumberOnMax7221(number);
-        display.clearDisplay();
-        display.setTextSize(3);
-        display.setTextColor(SSD1306_WHITE);
-        display.setCursor(20, 10);
-        display.printf("%02d", number);
-        display.display();
-        vTaskDelay(pdMS_TO_TICKS(FLASH_DELAY));
+void debugDisplay(int number, uint8_t textSize = 3, int cursorX = 20, int cursorY = 10)
+{
+    display.clearDisplay();
+    display.setTextSize(textSize);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(cursorX, cursorY);
+    display.printf("%02d", number);
+    display.display();
+}
 
+void flashFinalNumber(int number)
+{
+    for (int i = 0; i < 6; i++)
+    {
         // Clear display for flashing effect
         sendToMax7221(0x02, 0x0F);
         sendToMax7221(0x01, 0x0F);
         display.clearDisplay();
         display.display();
+        vTaskDelay(pdMS_TO_TICKS(FLASH_DELAY));
+
+        displayNumberOnMax7221(number);
+        debugDisplay(number);
         vTaskDelay(pdMS_TO_TICKS(FLASH_DELAY));
     }
 }
@@ -145,16 +152,9 @@ void countdownTask(void *pvParameters)
             {
                 Serial.printf("Countdown: %d\n", countdownValue);
                 displayNumberOnMax7221(countdownValue);
-
-                display.clearDisplay();
-                display.setTextSize(3);
-                display.setTextColor(SSD1306_WHITE);
-                display.setCursor(20, 10);
-                display.printf("%02d", countdownValue);
-                display.display();
+                debugDisplay(countdownValue);
                 toggleLED();
-
-                vTaskDelay(pdMS_TO_TICKS(1000)); // Wait for 1 second
+                vTaskDelay(pdMS_TO_TICKS(1000));
             }
             flashFinalNumber(0);
             countdownValue = -1; // Stop counting
@@ -174,16 +174,10 @@ void countupTask(void *pvParameters)
             {
                 Serial.printf("Counting Up: %d\n", i);
                 displayNumberOnMax7221(i);
-
-                display.clearDisplay();
-                display.setTextSize(3);
-                display.setTextColor(SSD1306_WHITE);
-                display.setCursor(20, 10);
-                display.printf("%02d", i);
-                display.display();
+                debugDisplay(i);
                 toggleLED();
 
-                vTaskDelay(pdMS_TO_TICKS(1000)); // Wait for 1 second
+                vTaskDelay(pdMS_TO_TICKS(1000));
             }
             flashFinalNumber(countupValue);
             countupValue = -1; // Stop counting
@@ -247,18 +241,8 @@ void keypadTask(void *pvParameters)
     }
 }
 
-void setup()
+void blinkLED()
 {
-    Serial.begin(115200);
-
-    Wire.begin(SDA_PIN, SCL_PIN);
-
-    pinMode(INT_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(INT_PIN), handleInterrupt, CHANGE);
-    resetKeypad();
-
-    pinMode(2, OUTPUT);
-
     for (int i = 0; i < 4; i++)
     {
         digitalWrite(LED_PIN, HIGH);
@@ -266,16 +250,20 @@ void setup()
         digitalWrite(LED_PIN, LOW);
         delay(100);
     }
+}
 
-    SPI.begin();
+void setup()
+{
+    Serial.begin(115200);
+
+    Wire.begin(SDA_PIN, SCL_PIN);
+
+    pinMode(INT_PIN, INPUT_PULLUP);
+    pinMode(LED_PIN, OUTPUT);
     pinMode(CS_PIN, OUTPUT);
-    digitalWrite(CS_PIN, HIGH);
 
-    sendToMax7221(0x0C, 0x01); // Turn on (Shutdown Mode OFF)
-    sendToMax7221(0x0F, 0x00); // Disable Display Test Mode
-    sendToMax7221(0x09, 0xFF); // Enable BCD decoding (for 7-segment numbers)
-    sendToMax7221(0x0A, 0x0a); // Set brightness (0x00 to 0x0F)
-    sendToMax7221(0x0B, 0x01); // Set scan limit (all digits on)
+    attachInterrupt(digitalPinToInterrupt(INT_PIN), handleInterrupt, CHANGE);
+    resetKeypad();
 
     if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
     {
@@ -284,15 +272,35 @@ void setup()
             ; // Stop execution
     }
 
+
+
+    blinkLED();
+
+    SPI.begin();
+    digitalWrite(CS_PIN, HIGH);
+
+    sendToMax7221(0x0C, 0x01); // Turn on (Shutdown Mode OFF)
+    sendToMax7221(0x0A, 0x0a); // Set brightness (0x00 to 0x0F)
+
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 10);
     display.println("MAX7221 Initialized");
+    //display.startscrollleft(1, 1);
     display.display();
-    delay(2000);
+    delay(1500);
+
+    sendToMax7221(0x0F, 0x00); // Disable Display Test Mode
+    sendToMax7221(0x09, 0xFF); // Enable BCD decoding (for 7-segment numbers)
+    sendToMax7221(0x0B, 0x01); // Set scan limit (all digits on)
+
+    //display.stopscroll();
     display.clearDisplay();
-    display.setTextSize(3);
+    display.setTextSize(1);
+    display.setCursor(0, 10);
+    display.println("Waiting for input...");
+    display.display();
 
     xTaskCreatePinnedToCore(keypadTask, "KeypadTask", 4096, NULL, 1, &keypadTaskHandle, 1);
     xTaskCreatePinnedToCore(countdownTask, "CountdownTask", 4096, NULL, 2, &countdownTaskHandle, 1);
