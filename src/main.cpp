@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include <SPI.h>
-#include <Adafruit_GFX.h>
+// #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
 #define SCREEN_WIDTH 128
@@ -31,10 +31,10 @@ int countdownValue = -1; // Holds the countdown start value
 int countupValue = -1;   // Holds the count-up end value
 
 const char keypadMap[4][4] = {
-    {'1', '2', '3', 'A'},
-    {'4', '5', '6', 'B'},
-    {'7', '8', '9', 'C'},
-    {'*', '0', '#', 'D'}};
+    {'D', '#', '0', '*'},
+    {'C', '9', '8', '7'},
+    {'B', '6', '5', '4'},
+    {'A', '3', '2', '1'}};
 
 void IRAM_ATTR handleInterrupt()
 {
@@ -61,25 +61,37 @@ byte readPCF8574()
 
 void resetKeypad()
 {
-    writePCF8574(0x0F); // All rows HIGH
-    delay(2);           // Crucial delay for INT reset
+    for (int attempt = 0; attempt < 3; attempt++)
+    {
+        delay(5);
+        writePCF8574(0xFF); // Safe state
+        delay(2);
+        writePCF8574(0xF0); // Columns HIGH
+        delay(2);
+
+        byte state = readPCF8574();
+        if (state != 0xFF)
+            return; // Success
+    }
+
+    Serial.println("WARNING: PCF8574 did not respond after reset"); // Crucial delay for INT reset
 }
 
-char readKeypad()
+char readKeypadFlipped()
 {
-    for (int row = 0; row < 4; row++)
+    for (int col = 0; col < 4; col++)
     {
-        byte rowMask = ~(1 << row) & 0x0F;
-        writePCF8574(rowMask | 0xF0); // Activate one row
+        byte colMask = ~(1 << (col + 4)) & 0xF0;
+        writePCF8574(colMask | 0x0F); // Activate one column
         delayMicroseconds(500);
 
-        byte colData = readPCF8574() & 0xF0;
+        byte rowData = readPCF8574() & 0x0F;
 
-        if (colData != 0xF0)
+        if (rowData != 0x0F)
         {
-            for (int col = 0; col < 4; col++)
+            for (int row = 0; row < 4; row++)
             {
-                if (!(colData & (1 << (col + 4))))
+                if (!(rowData & (1 << row)))
                 {
                     resetKeypad();
                     return keypadMap[row][col];
@@ -111,8 +123,13 @@ void displayNumberOnMax7221(int number)
     int tens = number / 10;
     int ones = number % 10;
 
-    sendToMax7221(0x01, tens > 0 ? tens : 0x0f);
-    sendToMax7221(0x02, ones);
+    uint8_t digit1 = tens > 0 ? tens : 0x0F;
+    uint8_t digit2 = ones;
+
+    sendToMax7221(0x01, digit1);
+    sendToMax7221(0x02, digit2);
+    sendToMax7221(0x03, digit1);
+    sendToMax7221(0x04, digit2);
 }
 
 void debugDisplay(int number, uint8_t textSize = 3, int cursorX = 20, int cursorY = 10)
@@ -195,7 +212,7 @@ void keypadTask(void *pvParameters)
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         vTaskDelay(pdMS_TO_TICKS(50)); // Debounce delay
-        char key = readKeypad();
+        char key = readKeypadFlipped();
 
         if (key && (key != lastKey || millis() - lastKeyTime > DEBOUNCE_TIME))
         {
@@ -256,6 +273,26 @@ void setup()
 {
     Serial.begin(115200);
 
+    // TEMPORARY: Check pull-up status on key lines
+    //pinMode(INT_PIN, INPUT);
+    //pinMode(SDA_PIN, INPUT);
+    //pinMode(SCL_PIN, INPUT);
+
+    //delay(100); // Let pins stabilize
+
+    Serial.print("MOSI: ");
+    Serial.println(MOSI);
+    Serial.print("MISO: ");
+    Serial.println(MISO);
+    Serial.print("SCK: ");
+    Serial.println(SCK);
+    Serial.print("SS: ");
+    Serial.println(SS);
+    Serial.print("SDA: ");
+    Serial.println(SDA_PIN);
+    Serial.print("SCL: ");
+    Serial.println(SCL_PIN);
+
     Wire.begin(SDA_PIN, SCL_PIN);
 
     pinMode(INT_PIN, INPUT_PULLUP);
@@ -272,30 +309,56 @@ void setup()
             ; // Stop execution
     }
 
-
-
     blinkLED();
 
     SPI.begin();
     digitalWrite(CS_PIN, HIGH);
 
+    sendToMax7221(0x0F, 0x00); // Disable Display Test Mode
     sendToMax7221(0x0C, 0x01); // Turn on (Shutdown Mode OFF)
-    sendToMax7221(0x0A, 0x0a); // Set brightness (0x00 to 0x0F)
+    sendToMax7221(0x0B, 0x03); // Set scan limit (all digits on)
+    sendToMax7221(0x09, 0xFF); // Enable BCD decoding (for 7-segment numbers)
+    sendToMax7221(0x0A, 0x0f); // Set brightness (0x00 to 0x0F)
+
+    for (int i = 1; i <= 4; i++)
+    {
+        sendToMax7221(i, 0x0f);
+    }
+
+    // Briefly show the digit 8 on all four digits, one by one
+    for (int i = 1; i <= 4; i++)
+    {
+        sendToMax7221(i, 8);
+        delay(400);
+        sendToMax7221(i, 0x0F);
+    }
+    // delay(500);
+    // for (int i = 1; i <= 4; i++)
+    //{
+    //  Clear digit
+    //}
+
+    // display.stopscroll();
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 10);
+    byte initialState = readPCF8574();
+    char stateBuffer[32];
+    sprintf(stateBuffer, "Initial PCF8574: 0x%02X", initialState);
+    display.println(stateBuffer);
+    display.display();
+    delay(1500);
 
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 10);
     display.println("MAX7221 Initialized");
-    //display.startscrollleft(1, 1);
     display.display();
     delay(1500);
 
-    sendToMax7221(0x0F, 0x00); // Disable Display Test Mode
-    sendToMax7221(0x09, 0xFF); // Enable BCD decoding (for 7-segment numbers)
-    sendToMax7221(0x0B, 0x01); // Set scan limit (all digits on)
-
-    //display.stopscroll();
+    // display.stopscroll();
     display.clearDisplay();
     display.setTextSize(1);
     display.setCursor(0, 10);
