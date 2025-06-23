@@ -1,21 +1,24 @@
 #include <Arduino.h>
+#include <Wire.h>
 #include <SPI.h>
-// #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <Adafruit_NeoPixel.h>
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 32
-#define CS_PIN 5
+#define CS_PIN 11
 #define DEBOUNCE_TIME 100
 #define BUFFER_SIZE 3
 #define PCF8574_ADDR 0x20
-#define SDA_PIN 21
-#define SCL_PIN 22
-#define INT_PIN 34 // 10k pull-up resistor required!
-#define LED_PIN 2
+#define SDA_PIN 8
+#define SCL_PIN 9
+#define INT_PIN 7 // 10k pull-up resistor required!
+#define LED_PIN 21
+#define NUM_PIXELS 1
 #define FLASH_DELAY 400
 bool ledState = LOW;
 
+Adafruit_NeoPixel strip(NUM_PIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 TaskHandle_t keypadTaskHandle = NULL;
@@ -25,7 +28,7 @@ TaskHandle_t countupTaskHandle = NULL;
 volatile bool keyPressed = false;
 unsigned long lastKeyTime = 0;
 char lastKey = 0;
-char inputBuffer[BUFFER_SIZE] = {0};
+char inputBuffer[BUFFER_SIZE] = { 0 };
 int bufferIndex = 0;
 int countdownValue = -1; // Holds the countdown start value
 int countupValue = -1;   // Holds the count-up end value
@@ -34,7 +37,7 @@ const char keypadMap[4][4] = {
     {'D', '#', '0', '*'},
     {'C', '9', '8', '7'},
     {'B', '6', '5', '4'},
-    {'A', '3', '2', '1'}};
+    {'A', '3', '2', '1'} };
 
 void IRAM_ATTR handleInterrupt()
 {
@@ -107,7 +110,15 @@ char readKeypadFlipped()
 void toggleLED()
 {
     ledState = !ledState;
-    digitalWrite(LED_PIN, ledState);
+
+    if (ledState) {
+        strip.setPixelColor(0, strip.Color(0, 50, 0)); // Set first pixel to red
+    }
+    else {
+        strip.clear();
+    }
+
+    strip.show();
 }
 
 void sendToMax7221(uint8_t address, uint8_t value)
@@ -128,8 +139,8 @@ void displayNumberOnMax7221(int number)
 
     sendToMax7221(0x01, digit1);
     sendToMax7221(0x02, digit2);
-    sendToMax7221(0x03, digit1);
-    sendToMax7221(0x04, digit2);
+    sendToMax7221(0x03, 0);
+    sendToMax7221(0x04, 0);
 }
 
 void debugDisplay(int number, uint8_t textSize = 3, int cursorX = 20, int cursorY = 10)
@@ -147,8 +158,10 @@ void flashFinalNumber(int number)
     for (int i = 0; i < 6; i++)
     {
         // Clear display for flashing effect
-        sendToMax7221(0x02, 0x0F);
         sendToMax7221(0x01, 0x0F);
+        sendToMax7221(0x02, 0x0F);
+        sendToMax7221(0x03, 0x0F);
+        sendToMax7221(0x04, 0x0F);
         display.clearDisplay();
         display.display();
         vTaskDelay(pdMS_TO_TICKS(FLASH_DELAY));
@@ -159,7 +172,7 @@ void flashFinalNumber(int number)
     }
 }
 
-void countdownTask(void *pvParameters)
+void countdownTask(void* pvParameters)
 {
     while (1)
     {
@@ -181,7 +194,7 @@ void countdownTask(void *pvParameters)
 }
 
 // Count-up Task - Increments the number every second
-void countupTask(void *pvParameters)
+void countupTask(void* pvParameters)
 {
     while (1)
     {
@@ -204,7 +217,7 @@ void countupTask(void *pvParameters)
 }
 
 // Keypad Task - Only runs when an interrupt occurs
-void keypadTask(void *pvParameters)
+void keypadTask(void* pvParameters)
 {
     while (1)
     {
@@ -262,9 +275,9 @@ void blinkLED()
 {
     for (int i = 0; i < 4; i++)
     {
-        digitalWrite(LED_PIN, HIGH);
+        toggleLED();
         delay(100);
-        digitalWrite(LED_PIN, LOW);
+        toggleLED();
         delay(100);
     }
 }
@@ -272,26 +285,9 @@ void blinkLED()
 void setup()
 {
     Serial.begin(115200);
+    Serial.println("Starting setup...");
 
-    // TEMPORARY: Check pull-up status on key lines
-    //pinMode(INT_PIN, INPUT);
-    //pinMode(SDA_PIN, INPUT);
-    //pinMode(SCL_PIN, INPUT);
-
-    //delay(100); // Let pins stabilize
-
-    Serial.print("MOSI: ");
-    Serial.println(MOSI);
-    Serial.print("MISO: ");
-    Serial.println(MISO);
-    Serial.print("SCK: ");
-    Serial.println(SCK);
-    Serial.print("SS: ");
-    Serial.println(SS);
-    Serial.print("SDA: ");
-    Serial.println(SDA_PIN);
-    Serial.print("SCL: ");
-    Serial.println(SCL_PIN);
+    strip.begin();
 
     Wire.begin(SDA_PIN, SCL_PIN);
 
@@ -299,19 +295,23 @@ void setup()
     pinMode(LED_PIN, OUTPUT);
     pinMode(CS_PIN, OUTPUT);
 
+    toggleLED();
+    delay(1000);
+    toggleLED();
+
     attachInterrupt(digitalPinToInterrupt(INT_PIN), handleInterrupt, CHANGE);
     resetKeypad();
 
     if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
     {
         Serial.println(F("SSD1306 allocation failed"));
-        for (;;)
-            ; // Stop execution
+        //for (;;)
+        //    ; // Stop execution
     }
 
     blinkLED();
 
-    SPI.begin();
+    SPI.begin(12, 19, 13, CS_PIN);
     digitalWrite(CS_PIN, HIGH);
 
     sendToMax7221(0x0F, 0x00); // Disable Display Test Mode
@@ -368,6 +368,7 @@ void setup()
     xTaskCreatePinnedToCore(keypadTask, "KeypadTask", 4096, NULL, 1, &keypadTaskHandle, 1);
     xTaskCreatePinnedToCore(countdownTask, "CountdownTask", 4096, NULL, 2, &countdownTaskHandle, 1);
     xTaskCreatePinnedToCore(countupTask, "CountupTask", 4096, NULL, 2, &countupTaskHandle, 1);
+
 }
 
 void loop()
